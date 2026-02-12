@@ -65,3 +65,47 @@ cc_test(
         "@googletest//:gtest_main",
     ],
 )
+
+cc_library(
+    name = "berth_timeline",
+    hdrs = [
+        "berth_timeline.h",
+    ],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//leviathan/base:config",
+        "@abseil-cpp//absl/log:check",
+    ],
+)
+
+cc_test(
+    name = "berth_timeline_test",
+    srcs = ["berth_timeline_test.cpp"],
+    deps = [
+        ":berth_timeline",
+        "@googletest//:gtest",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_library(
+    name = "search_state",
+    hdrs = [
+        "search_state.h",
+    ],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//leviathan/base:config",
+        "@abseil-cpp//absl/log:check",
+    ],
+)
+
+cc_test(
+    name = "search_state_test",
+    srcs = ["search_state_test.cpp"],
+    deps = [
+        ":search_state",
+        "@googletest//:gtest",
+        "@googletest//:gtest_main",
+    ],
+)

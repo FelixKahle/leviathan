@@ -23,188 +23,221 @@
 #include <vector>
 #include "leviathan/bnb/search_trail.h"
 
-// Fixture for standard Integer testing
-class SearchTrailTest : public ::testing::Test
+struct ValueEntry
+{
+    size_t index;
+    int old_value;
+};
+
+struct DirtyEntry
+{
+    size_t index;
+};
+
+struct BAPEntry
+{
+    int vessel_idx;
+    int berth_idx;
+    int64_t old_time;
+    double old_cost;
+};
+
+class SearchTrailRestorationTest : public ::testing::Test
 {
 protected:
-    // Simulated global state
-    std::vector<int64_t> values_;
-    std::vector<int> flags_;
+    std::vector<int> data_;
 
-    // The trail under test (default int64_t)
-    leviathan::bnb::SearchTrail<int64_t> trail_;
-
-    SearchTrailTest() : trail_(100)
+    void SetUp() override
     {
-        values_.assign(10, 0);
-        flags_.assign(10, -1);
+        data_ = {0, 10, 20, 30, 40};
     }
 };
 
-TEST_F(SearchTrailTest, BasicValueRestoration)
+TEST_F(SearchTrailRestorationTest, PushAndBacktrack)
 {
-    // Initial State: values_[0] = 0
-    trail_.push_checkpoint();
+    leviathan::bnb::SearchTrail<ValueEntry> trail;
 
-    // 1. Save old value (0)
-    trail_.save_value(0, values_[0]);
-    // 2. Modify state
-    values_[0] = 42;
+    // 1. Start Frame
+    trail.push_frame();
 
-    EXPECT_EQ(values_[0], 42);
+    // 2. Record change: index 1 was 10, setting to 99
+    trail.push({1, 10});
+    data_[1] = 99;
+
+    EXPECT_EQ(data_[1], 99);
+    EXPECT_EQ(trail.depth(), 1);
 
     // 3. Backtrack
-    trail_.backtrack(values_, [](size_t){});
-
-    EXPECT_EQ(values_[0], 0);
-    EXPECT_TRUE(trail_.empty());
-}
-
-TEST_F(SearchTrailTest, DirtyIndexCleanup)
-{
-    // Initial State: flags_ all -1
-    trail_.push_checkpoint();
-
-    // 1. Mark index 5 as dirty
-    trail_.mark_touched(5);
-    flags_[5] = 1; // "True"
-
-    // 2. Mark index 2 as dirty
-    trail_.mark_touched(2);
-    flags_[2] = 1;
-
-    // 3. Backtrack with lambda to reset to -1
-    trail_.backtrack(values_, [&](const size_t index)
+    trail.backtrack([&](const ValueEntry& e)
     {
-        flags_[index] = -1;
+        data_[e.index] = e.old_value;
     });
 
-    EXPECT_EQ(flags_[5], -1);
-    EXPECT_EQ(flags_[2], -1);
-    EXPECT_EQ(flags_[0], -1); // Untouched should remain -1
+    // 4. Verify Restoration
+    EXPECT_EQ(data_[1], 10);
+    EXPECT_EQ(trail.depth(), 0);
+    EXPECT_TRUE(trail.empty());
 }
 
-TEST_F(SearchTrailTest, NestedCheckpoints)
+TEST_F(SearchTrailRestorationTest, NestedFrames)
 {
-    // Level 0: values_[0] = 0
-    trail_.push_checkpoint(); // CP 1
-    trail_.save_value(0, 0);
-    values_[0] = 10;
+    leviathan::bnb::SearchTrail<ValueEntry> trail;
 
-    // Level 1: values_[0] = 10
-    trail_.push_checkpoint(); // CP 2
-    trail_.save_value(0, 10);
-    values_[0] = 20;
+    // Level 1: Change index 0 (0 -> 100)
+    trail.push_frame();
+    trail.push({0, 0});
+    data_[0] = 100;
 
-    EXPECT_EQ(values_[0], 20);
-    EXPECT_EQ(trail_.depth(), 2);
+    // Level 2: Change index 1 (10 -> 200)
+    trail.push_frame();
+    trail.push({1, 10});
+    data_[1] = 200;
 
-    // Backtrack to Level 1
-    trail_.backtrack(values_, flags_, -1);
-    EXPECT_EQ(values_[0], 10);
-    EXPECT_EQ(trail_.depth(), 1);
+    EXPECT_EQ(trail.depth(), 2);
+    EXPECT_EQ(data_[0], 100);
+    EXPECT_EQ(data_[1], 200);
 
-    // Backtrack to Level 0
-    trail_.backtrack(values_, flags_, -1);
-    EXPECT_EQ(values_[0], 0);
-    EXPECT_EQ(trail_.depth(), 0);
+    // Backtrack Level 2
+    trail.backtrack([&](const ValueEntry& e)
+    {
+        data_[e.index] = e.old_value;
+    });
+
+    EXPECT_EQ(trail.depth(), 1);
+    EXPECT_EQ(data_[1], 10); // Restored
+    EXPECT_EQ(data_[0], 100); // Still modified
+
+    // Backtrack Level 1
+    trail.backtrack([&](const ValueEntry& e)
+    {
+        data_[e.index] = e.old_value;
+    });
+
+    EXPECT_EQ(trail.depth(), 0);
+    EXPECT_EQ(data_[0], 0); // Restored
 }
 
-TEST_F(SearchTrailTest, CommitCheckpointMerge)
+TEST(SearchTrailCoreTest, LIFOOrderCorrectness)
 {
-    // Scenario: We go deep, then "commit" the changes, effectively
-    // merging the deeper node's changes into the parent node.
+    leviathan::bnb::SearchTrail<std::string> trail;
+    std::vector<std::string> ops;
 
-    // Level 0
-    trail_.push_checkpoint(); // CP 1
-    trail_.save_value(0, 0);
-    values_[0] = 10;
+    trail.push_frame();
+    trail.push("First");
+    trail.push("Second");
+    trail.push("Third");
 
-    // Level 1
-    trail_.push_checkpoint(); // CP 2
-    trail_.save_value(0, 10);
-    values_[0] = 20;
+    // Backtrack should process: Third, Second, First
+    trail.backtrack([&](const std::string& s)
+    {
+        ops.push_back(s);
+    });
 
-    EXPECT_EQ(trail_.depth(), 2);
-
-    // Commit CP 2.
-    // This removes the "undo boundary" between L1 and L0.
-    // The save_value(0, 10) and save_value(0, 0) are now both part of CP 1.
-    trail_.commit_checkpoint();
-
-    EXPECT_EQ(trail_.depth(), 1);
-    EXPECT_EQ(values_[0], 20); // State hasn't changed
-
-    // Now if we backtrack, we should go all the way back to 0
-    // because both history entries are under the remaining checkpoint.
-    trail_.backtrack(values_, flags_, -1);
-
-    EXPECT_EQ(values_[0], 0);
-    EXPECT_EQ(trail_.depth(), 0);
+    ASSERT_EQ(ops.size(), 3);
+    EXPECT_EQ(ops[0], "Third");
+    EXPECT_EQ(ops[1], "Second");
+    EXPECT_EQ(ops[2], "First");
 }
 
-TEST_F(SearchTrailTest, MemoryTracking)
+TEST(SearchTrailCoreTest, EmplaceSemantics)
 {
-    // 1. Initial State
-    EXPECT_EQ(trail_.used_memory_bytes(), 0);
-    // Capacity should be > 0 because we reserved 100 in constructor
-    EXPECT_GT(trail_.reserved_memory_bytes(), 0);
+    leviathan::bnb::SearchTrail<BAPEntry> trail;
+    trail.push_frame();
 
-    const size_t initial_reserved = trail_.reserved_memory_bytes();
+    // Verify emplace constructs in-place
+    trail.emplace(1, 2, 100, 50.5);
 
-    // 2. Add data
-    trail_.push_checkpoint();
-    trail_.save_value(0, 50);
-    trail_.mark_touched(1);
-
-    EXPECT_GT(trail_.used_memory_bytes(), 0);
-
-    // 3. Ensure no reallocation occurred (critical for perf)
-    EXPECT_EQ(trail_.reserved_memory_bytes(), initial_reserved);
-
-    // 4. Clear
-    trail_.backtrack(values_, flags_, -1);
-    EXPECT_EQ(trail_.used_memory_bytes(), 0);
+    bool checked = false;
+    trail.backtrack([&](const BAPEntry& e)
+    {
+        EXPECT_EQ(e.vessel_idx, 1);
+        EXPECT_EQ(e.berth_idx, 2);
+        EXPECT_EQ(e.old_time, 100);
+        EXPECT_DOUBLE_EQ(e.old_cost, 50.5);
+        checked = true;
+    });
+    EXPECT_TRUE(checked);
 }
 
-// --- Template Tests ---
-
-TEST(SearchTrailTemplateTest, HandlesDoubles)
+TEST(SearchTrailCoreTest, MemoryManagement)
 {
-    std::vector<double> d_values(5, 0.0);
+    // Reserve space for 100 entries and 10 frames
+    leviathan::bnb::SearchTrail<int> trail(100, 10);
 
-    // Instantiate with double
-    leviathan::bnb::SearchTrail<double> d_trail(10);
+    const size_t initial_cap = trail.allocated_memory_bytes();
+    EXPECT_GT(initial_cap, 0);
+    EXPECT_EQ(trail.used_memory_bytes(), 0);
 
-    d_trail.push_checkpoint();
-    d_trail.save_value(0, d_values[0]);
-    d_values[0] = 3.14159;
+    trail.push_frame();
+    trail.push(42);
 
-    EXPECT_DOUBLE_EQ(d_values[0], 3.14159);
+    // Usage should go up
+    EXPECT_GT(trail.used_memory_bytes(), 0);
 
-    d_trail.backtrack(d_values, [](size_t){});
+    // Capacity should ideally remain stable (since we reserved)
+    EXPECT_EQ(trail.allocated_memory_bytes(), initial_cap);
 
-    EXPECT_DOUBLE_EQ(d_values[0], 0.0);
+    // After reset, usage is 0 but capacity is retained
+    trail.clear();
+    EXPECT_EQ(trail.used_memory_bytes(), 0);
+    EXPECT_EQ(trail.allocated_memory_bytes(), initial_cap);
 }
 
-TEST(SearchTrailTemplateTest, HandlesCustomStructs)
+TEST(SearchTrailCoreTest, ReserveAndShrink)
 {
-    struct Domain { int min; int max; };
-    std::vector<Domain> domains(1, {0, 10});
+    leviathan::bnb::SearchTrail<int> trail;
 
-    // Instantiate with custom struct
-    leviathan::bnb::SearchTrail<Domain> domain_trail(10);
+    trail.reserve(1000, 100);
+    const size_t big_cap = trail.allocated_memory_bytes();
 
-    domain_trail.push_checkpoint();
-    domain_trail.save_value(0, domains[0]);
+    trail.push_frame();
+    trail.push(1);
 
-    // Constrain domain
-    domains[0] = {5, 10};
+    trail.shrink_to_fit();
+    const size_t small_cap = trail.allocated_memory_bytes();
 
-    EXPECT_EQ(domains[0].min, 5);
+    EXPECT_LT(small_cap, big_cap);
 
-    domain_trail.backtrack(domains, [](size_t){});
-
-    EXPECT_EQ(domains[0].min, 0);
-    EXPECT_EQ(domains[0].max, 10);
+    // Verify data integrity after shrink
+    bool seen = false;
+    trail.backtrack([&](int i)
+    {
+        EXPECT_EQ(i, 1);
+        seen = true;
+    });
+    EXPECT_TRUE(seen);
 }
+
+TEST(SearchTrailCoreTest, DirtyIndexPattern)
+{
+    leviathan::bnb::SearchTrail<DirtyEntry> flag_trail;
+    std::vector<bool> flags(5, false);
+
+    flag_trail.push_frame();
+
+    // Touch index 2
+    flag_trail.push({2});
+    flags[2] = true;
+
+    // Touch index 4
+    flag_trail.push({4});
+    flags[4] = true;
+
+    // Undo: Reset all recorded indices to false
+    flag_trail.backtrack([&](const DirtyEntry& e)
+    {
+        flags[e.index] = false;
+    });
+
+    EXPECT_FALSE(flags[2]);
+    EXPECT_FALSE(flags[4]);
+}
+
+#ifndef NDEBUG
+TEST(SearchTrailDeathTest, BacktrackEmpty)
+{
+    leviathan::bnb::SearchTrail<int> trail;
+    // Backtracking without a frame should trigger DCHECK
+    EXPECT_DEATH(trail.backtrack([](int){}), "");
+}
+#endif
