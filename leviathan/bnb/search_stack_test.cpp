@@ -21,9 +21,9 @@
 
 #include "leviathan/bnb/search_stack.h"
 #include <gtest/gtest.h>
+#include <ranges>
 #include <vector>
 #include <array>
-#include <ranges>
 #include <string>
 
 struct Decision
@@ -47,7 +47,7 @@ TEST(SearchStackTest, Preallocation)
 {
     constexpr size_t entry_cap = 1024;
     constexpr size_t frame_cap = 64;
-    leviathan::bnb::SearchStack<int> stack(entry_cap, frame_cap);
+    const leviathan::bnb::SearchStack<int> stack(entry_cap, frame_cap);
 
     EXPECT_GE(stack.allocated_memory_bytes(), entry_cap * sizeof(int));
     EXPECT_TRUE(stack.empty());
@@ -63,7 +63,7 @@ TEST(SearchStackTest, FrameBasics)
     stack.emplace(1, 102);
 
     EXPECT_EQ(stack.depth(), 1);
-    auto frame1 = stack.current_frame_entries();
+    const auto frame1 = stack.current_frame_entries();
     ASSERT_EQ(frame1.size(), 2);
     EXPECT_EQ(frame1[0].berth_id, 101);
     EXPECT_EQ(frame1[1].berth_id, 102);
@@ -107,7 +107,7 @@ TEST(SearchStackTest, FillFrameFromRange)
     stack.fill_frame(decisions);
 
     EXPECT_EQ(stack.depth(), 1);
-    auto view = stack.current_frame_entries();
+    const auto view = stack.current_frame_entries();
     EXPECT_EQ(view.size(), 5);
     EXPECT_EQ(view.back(), 5);
 }
@@ -164,13 +164,13 @@ TEST(SearchStackTest, FillFrameWithCapacityHint)
     EXPECT_EQ(stack.current_frame_entries().size(), 1000);
 }
 
-TEST(SearchStackTest, ResetRetainsMemory)
+TEST(SearchStackTest, ClearRetainsMemory)
 {
     leviathan::bnb::SearchStack<int> stack(500, 50);
     stack.fill_frame({1, 2, 3});
 
     const size_t cap = stack.allocated_memory_bytes();
-    stack.reset();
+    stack.clear();
 
     EXPECT_TRUE(stack.empty());
     EXPECT_EQ(stack.allocated_memory_bytes(), cap);
@@ -210,3 +210,78 @@ TEST(SearchStackDeathTest, InvalidOperations)
     EXPECT_DEATH(stack.pop_entry(), "");
 }
 #endif
+
+TEST(SearchStackTest, GlobalIterationCoversAllFrames)
+{
+    leviathan::bnb::SearchStack<int> stack;
+
+    // Depth 1: Push 10, 20
+    stack.push_frame();
+    stack.extend({10, 20});
+
+    // Depth 2: Push 30, 40
+    stack.push_frame();
+    stack.extend({30, 40});
+
+    // Depth 3: Push 50
+    stack.push_frame();
+    stack.push(50);
+
+    // 1. Verify Current Frame (Local)
+    const auto current_view = stack.current_frame_entries();
+    EXPECT_EQ(current_view.size(), 1);
+    EXPECT_EQ(current_view[0], 50);
+
+    // 2. Verify Global Iterators (Root -> Leaf)
+    std::vector<int> full_history;
+    for (const auto& val : stack)
+    {
+        full_history.push_back(val);
+    }
+
+    // Should contain ALL values: 10, 20, 30, 40, 50
+    ASSERT_EQ(full_history.size(), 5);
+    EXPECT_EQ(full_history[0], 10); // Root
+    EXPECT_EQ(full_history[4], 50); // Leaf
+
+    // 3. Verify Standard Algorithms
+    const auto it = std::ranges::find(stack, 30);
+    EXPECT_NE(it, stack.end());
+    EXPECT_EQ(*it, 30);
+}
+
+TEST(SearchStackTest, ReverseIteration)
+{
+    leviathan::bnb::SearchStack<int> stack;
+
+    // Depth 1
+    stack.fill_frame({1, 2});
+    // Depth 2
+    stack.fill_frame({3, 4});
+
+    // Iterate backwards: should be 4, 3, 2, 1
+    std::vector<int> reverse_history;
+    for (int & it : std::ranges::reverse_view(stack))
+    {
+        reverse_history.push_back(it);
+    }
+
+    ASSERT_EQ(reverse_history.size(), 4);
+    EXPECT_EQ(reverse_history[0], 4);
+    EXPECT_EQ(reverse_history[3], 1);
+}
+
+TEST(SearchStackTest, InitializerListSyntax)
+{
+    leviathan::bnb::SearchStack<std::string> stack;
+
+    // Test fill_frame({ ... })
+    stack.fill_frame({"Vessel1", "Vessel2"});
+    EXPECT_EQ(stack.depth(), 1);
+    EXPECT_EQ(stack.top(), "Vessel2");
+
+    // Test extend({ ... })
+    stack.extend({"Vessel3"});
+    EXPECT_EQ(stack.current_frame_size(), 3);
+    EXPECT_EQ(stack.top(), "Vessel3");
+}

@@ -26,6 +26,8 @@
 #include <span>
 #include <concepts>
 #include <ranges>
+#include <utility>
+#include <initializer_list>
 #include "absl/log/check.h"
 #include "leviathan/base/config.h"
 
@@ -48,6 +50,10 @@ namespace leviathan::bnb
         using size_type = std::size_t;
         using reference = T&;
         using const_reference = const T&;
+        using iterator = container_type::iterator;
+        using const_iterator = container_type::const_iterator;
+        using reverse_iterator = container_type::reverse_iterator;
+        using const_reverse_iterator = container_type::const_reverse_iterator;
 
         SearchStack() = default;
 
@@ -157,6 +163,26 @@ namespace leviathan::bnb
             return frames_.empty();
         }
 
+        /// \brief Reserves memory for entries and frames to prevent reallocations during search.
+        ///
+        /// The entry_capacity should be the total number of decisions expected across all frames,
+        /// while frame_capacity should be the maximum expected search depth.
+        LEVIATHAN_FORCE_INLINE void reserve(const size_type entry_capacity, const size_type frame_capacity)
+        {
+            entries_.reserve(entry_capacity);
+            frames_.reserve(frame_capacity);
+        }
+
+        /// \brief Shrinks the capacity of entries and frames to fit their current size.
+        ///
+        /// This should not be called, as it may cause expensive reallocations.
+        /// Provided for future or advanced use cases where memory needs to be reclaimed after search.
+        LEVIATHAN_FORCE_INLINE void shrink_to_fit() noexcept
+        {
+            entries_.shrink_to_fit();
+            frames_.shrink_to_fit();
+        }
+
         /// \brief Returns the number of entries in the current active frame.
         [[nodiscard]] LEVIATHAN_FORCE_INLINE size_type current_frame_size() const noexcept
         {
@@ -164,7 +190,7 @@ namespace leviathan::bnb
         }
 
         /// \brief Resets the entire stack while retaining allocated capacity.
-        LEVIATHAN_FORCE_INLINE void reset() noexcept
+        LEVIATHAN_FORCE_INLINE void clear() noexcept
         {
             entries_.clear();
             frames_.clear();
@@ -297,6 +323,72 @@ namespace leviathan::bnb
         {
             return (entries_.capacity() * sizeof(T)) + (frames_.capacity() * sizeof(size_type));
         }
+
+        /// \name Global Iterators
+        /// Iterates over the ENTIRE stack history (Root -> Leaf).
+        /// @{
+
+        [[nodiscard]] LEVIATHAN_FORCE_INLINE iterator begin() noexcept
+        {
+            return entries_.begin();
+        }
+
+        [[nodiscard]] LEVIATHAN_FORCE_INLINE const_iterator begin() const noexcept
+        {
+            return entries_.begin();
+        }
+
+        [[nodiscard]] LEVIATHAN_FORCE_INLINE const_iterator cbegin() const noexcept
+        {
+            return entries_.cbegin();
+        }
+
+        [[nodiscard]] LEVIATHAN_FORCE_INLINE iterator end() noexcept
+        {
+            return entries_.end();
+        }
+
+        [[nodiscard]] LEVIATHAN_FORCE_INLINE const_iterator end() const noexcept
+        {
+            return entries_.end();
+        }
+
+        [[nodiscard]] LEVIATHAN_FORCE_INLINE const_iterator cend() const noexcept
+        {
+            return entries_.cend();
+        }
+
+        [[nodiscard]] LEVIATHAN_FORCE_INLINE reverse_iterator rbegin() noexcept
+        {
+            return entries_.rbegin();
+        }
+
+        [[nodiscard]] LEVIATHAN_FORCE_INLINE const_reverse_iterator rbegin() const noexcept
+        {
+            return entries_.rbegin();
+        }
+
+        [[nodiscard]] LEVIATHAN_FORCE_INLINE const_reverse_iterator crbegin() const noexcept
+        {
+            return entries_.crbegin();
+        }
+
+        [[nodiscard]] LEVIATHAN_FORCE_INLINE reverse_iterator rend() noexcept
+        {
+            return entries_.rend();
+        }
+
+        [[nodiscard]] LEVIATHAN_FORCE_INLINE const_reverse_iterator rend() const noexcept
+        {
+            return entries_.rend();
+        }
+
+        [[nodiscard]] LEVIATHAN_FORCE_INLINE const_reverse_iterator crend() const noexcept
+        {
+            return entries_.crend();
+        }
+
+        /// @}
 
     private:
         std::vector<T> entries_;

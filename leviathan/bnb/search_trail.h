@@ -24,7 +24,6 @@
 
 #include <vector>
 #include <utility>
-#include <cstdint>
 #include <concepts>
 #include "leviathan/base/config.h"
 
@@ -44,12 +43,15 @@ namespace leviathan::bnb
     ///   and "Dirty Indices" (reset to default).
     /// - **Cache Locality:** Restoration iterates strictly in LIFO order (reverse),
     ///   keeping memory access patterns predictable and cache-friendly.
+    ///
+    /// \tparam T The type of values being tracked (e.g., int64_t for numeric state, or a struct for complex state).
+    template<typename T>
     class SearchTrail
     {
     public:
         using size_type = std::size_t;
         using index_type = std::size_t;
-        using value_type = std::int64_t;
+        using value_type = T;
 
         /// \brief Default constructor.
         SearchTrail() noexcept = default;
@@ -164,6 +166,18 @@ namespace leviathan::bnb
             value_trail_.resize(target_val_size);
         }
 
+        /// \brief Merges the changes of the current level into the previous level.
+        ///
+        /// Removes the top checkpoint without restoring values. The changes recorded
+        /// since that checkpoint effectively become part of the parent scope.
+        LEVIATHAN_FORCE_INLINE void commit_checkpoint()
+        {
+            if (!checkpoints_.empty()) [[likely]]
+            {
+                checkpoints_.pop_back();
+            }
+        }
+
         /// \brief Convenience overload for resetting dirty indices to a fixed value.
         ///
         /// Useful for resetting boolean flags (to false) or IDs (to -1/0) without
@@ -222,18 +236,46 @@ namespace leviathan::bnb
 
         /// @}
 
-        /// \brief Returns the memory currently used by valid history entries.
+        /// \brief Returns the size in bytes of the valid history entries.
         ///
-        /// Calculates the total size in bytes of all active elements in the trail stacks.
-        /// \note This returns the size of the *data*, not the *capacity* (allocated memory).
-        ///       To check total memory footprint including reserve, use capacity() logic.
-        ///
-        /// \return The size in bytes of all valid entries in the trail.
-        [[nodiscard]] LEVIATHAN_FORCE_INLINE size_type allocated_memory_bytes() const noexcept
+        /// \return The size of the data currently active in the trail.
+        [[nodiscard]] LEVIATHAN_FORCE_INLINE size_type used_memory_bytes() const noexcept
         {
             return (value_trail_.size() * sizeof(ValueEntry)) +
-                (dirty_indices_.size() * sizeof(DirtyEntry)) +
-                (checkpoints_.size() * sizeof(std::pair<size_type, size_type>));
+                   (dirty_indices_.size() * sizeof(DirtyEntry)) +
+                   (checkpoints_.size() * sizeof(std::pair<size_type, size_type>));
+        }
+
+        /// \brief Returns the total reserved memory in bytes.
+        ///
+        /// Useful for debugging to ensure vectors are not reallocating during search.
+        [[nodiscard]] LEVIATHAN_FORCE_INLINE size_type reserved_memory_bytes() const noexcept
+        {
+            return (value_trail_.capacity() * sizeof(ValueEntry)) +
+                   (dirty_indices_.capacity() * sizeof(DirtyEntry)) +
+                   (checkpoints_.capacity() * sizeof(std::pair<size_type, size_type>));
+        }
+
+        /// \brief Reserves memory for the trail stacks.
+        ///
+        /// Should be called before search to prevent reallocations. The size should be
+        /// estimated based on the expected maximum depth and branching factor of the search tree.
+        LEVIATHAN_FORCE_INLINE void reserve(const size_type size)
+        {
+            value_trail_.reserve(size);
+            dirty_indices_.reserve(size);
+            checkpoints_.reserve(size);
+        }
+
+        /// \brief Shrinks the capacity of the trail stacks to fit their current size.
+        ///
+        /// This should not be called as it may cause expensive reallocations.
+        /// Provided for future or advanced use cases where memory needs to be reclaimed after search.
+        LEVIATHAN_FORCE_INLINE void shrink_to_fit() noexcept
+        {
+            value_trail_.shrink_to_fit();
+            dirty_indices_.shrink_to_fit();
+            checkpoints_.shrink_to_fit();
         }
 
     private:

@@ -23,101 +23,188 @@
 #include <vector>
 #include "leviathan/bnb/search_trail.h"
 
+// Fixture for standard Integer testing
 class SearchTrailTest : public ::testing::Test
 {
 protected:
-    std::vector<int64_t> times_;
-    std::vector<bool> assigned_bools_;
-    std::vector<int> assigned_ids_;
+    // Simulated global state
+    std::vector<int64_t> values_;
+    std::vector<int> flags_;
 
-    leviathan::bnb::SearchTrail trail_;
+    // The trail under test (default int64_t)
+    leviathan::bnb::SearchTrail<int64_t> trail_;
 
     SearchTrailTest() : trail_(100)
     {
-        times_.resize(10, 0);
-        assigned_bools_.resize(10, false);
-        assigned_ids_.resize(10, -1); // Default is -1
+        values_.assign(10, 0);
+        flags_.assign(10, -1);
     }
 };
 
-TEST_F(SearchTrailTest, LambdaRestoration)
+TEST_F(SearchTrailTest, BasicValueRestoration)
 {
-    times_[0] = 100;
-    assigned_ids_[0] = 5; // Assigned to Vessel 5
-
+    // Initial State: values_[0] = 0
     trail_.push_checkpoint();
-    trail_.save_value(0, 100);
-    trail_.mark_touched(0);
 
-    // Modify
-    times_[0] = 200;
-    assigned_ids_[0] = 99;
+    // 1. Save old value (0)
+    trail_.save_value(0, values_[0]);
+    // 2. Modify state
+    values_[0] = 42;
 
-    // Backtrack with CUSTOM logic (Reset to -1, not 0)
-    trail_.backtrack(times_, [&](const size_t idx)
+    EXPECT_EQ(values_[0], 42);
+
+    // 3. Backtrack
+    trail_.backtrack(values_, [](size_t){});
+
+    EXPECT_EQ(values_[0], 0);
+    EXPECT_TRUE(trail_.empty());
+}
+
+TEST_F(SearchTrailTest, DirtyIndexCleanup)
+{
+    // Initial State: flags_ all -1
+    trail_.push_checkpoint();
+
+    // 1. Mark index 5 as dirty
+    trail_.mark_touched(5);
+    flags_[5] = 1; // "True"
+
+    // 2. Mark index 2 as dirty
+    trail_.mark_touched(2);
+    flags_[2] = 1;
+
+    // 3. Backtrack with lambda to reset to -1
+    trail_.backtrack(values_, [&](const size_t index)
     {
-        assigned_ids_[idx] = -1;
+        flags_[index] = -1;
     });
 
-    EXPECT_EQ(times_[0], 100);
-    EXPECT_EQ(assigned_ids_[0], -1); // Correctly reset to -1
+    EXPECT_EQ(flags_[5], -1);
+    EXPECT_EQ(flags_[2], -1);
+    EXPECT_EQ(flags_[0], -1); // Untouched should remain -1
 }
 
-TEST_F(SearchTrailTest, ConvenienceBoolReset)
+TEST_F(SearchTrailTest, NestedCheckpoints)
 {
-    assigned_bools_[1] = true;
+    // Level 0: values_[0] = 0
+    trail_.push_checkpoint(); // CP 1
+    trail_.save_value(0, 0);
+    values_[0] = 10;
 
+    // Level 1: values_[0] = 10
+    trail_.push_checkpoint(); // CP 2
+    trail_.save_value(0, 10);
+    values_[0] = 20;
+
+    EXPECT_EQ(values_[0], 20);
+    EXPECT_EQ(trail_.depth(), 2);
+
+    // Backtrack to Level 1
+    trail_.backtrack(values_, flags_, -1);
+    EXPECT_EQ(values_[0], 10);
+    EXPECT_EQ(trail_.depth(), 1);
+
+    // Backtrack to Level 0
+    trail_.backtrack(values_, flags_, -1);
+    EXPECT_EQ(values_[0], 0);
+    EXPECT_EQ(trail_.depth(), 0);
+}
+
+TEST_F(SearchTrailTest, CommitCheckpointMerge)
+{
+    // Scenario: We go deep, then "commit" the changes, effectively
+    // merging the deeper node's changes into the parent node.
+
+    // Level 0
+    trail_.push_checkpoint(); // CP 1
+    trail_.save_value(0, 0);
+    values_[0] = 10;
+
+    // Level 1
+    trail_.push_checkpoint(); // CP 2
+    trail_.save_value(0, 10);
+    values_[0] = 20;
+
+    EXPECT_EQ(trail_.depth(), 2);
+
+    // Commit CP 2.
+    // This removes the "undo boundary" between L1 and L0.
+    // The save_value(0, 10) and save_value(0, 0) are now both part of CP 1.
+    trail_.commit_checkpoint();
+
+    EXPECT_EQ(trail_.depth(), 1);
+    EXPECT_EQ(values_[0], 20); // State hasn't changed
+
+    // Now if we backtrack, we should go all the way back to 0
+    // because both history entries are under the remaining checkpoint.
+    trail_.backtrack(values_, flags_, -1);
+
+    EXPECT_EQ(values_[0], 0);
+    EXPECT_EQ(trail_.depth(), 0);
+}
+
+TEST_F(SearchTrailTest, MemoryTracking)
+{
+    // 1. Initial State
+    EXPECT_EQ(trail_.used_memory_bytes(), 0);
+    // Capacity should be > 0 because we reserved 100 in constructor
+    EXPECT_GT(trail_.reserved_memory_bytes(), 0);
+
+    const size_t initial_reserved = trail_.reserved_memory_bytes();
+
+    // 2. Add data
     trail_.push_checkpoint();
+    trail_.save_value(0, 50);
     trail_.mark_touched(1);
 
-    // Backtrack using the helper overload
-    // "Reset assignments in assigned_bools_ to false"
-    trail_.backtrack(times_, assigned_bools_, false);
+    EXPECT_GT(trail_.used_memory_bytes(), 0);
 
-    EXPECT_FALSE(assigned_bools_[1]);
+    // 3. Ensure no reallocation occurred (critical for perf)
+    EXPECT_EQ(trail_.reserved_memory_bytes(), initial_reserved);
+
+    // 4. Clear
+    trail_.backtrack(values_, flags_, -1);
+    EXPECT_EQ(trail_.used_memory_bytes(), 0);
 }
 
-TEST_F(SearchTrailTest, ConvenienceIntReset)
+// --- Template Tests ---
+
+TEST(SearchTrailTemplateTest, HandlesDoubles)
 {
-    assigned_ids_[2] = 999;
+    std::vector<double> d_values(5, 0.0);
 
-    trail_.push_checkpoint();
-    trail_.mark_touched(2);
+    // Instantiate with double
+    leviathan::bnb::SearchTrail<double> d_trail(10);
 
-    // "Reset assignments in assigned_ids_ to 0"
-    trail_.backtrack(times_, assigned_ids_, 0);
+    d_trail.push_checkpoint();
+    d_trail.save_value(0, d_values[0]);
+    d_values[0] = 3.14159;
 
-    EXPECT_EQ(assigned_ids_[2], 0);
+    EXPECT_DOUBLE_EQ(d_values[0], 3.14159);
+
+    d_trail.backtrack(d_values, [](size_t){});
+
+    EXPECT_DOUBLE_EQ(d_values[0], 0.0);
 }
 
-TEST_F(SearchTrailTest, BytesUsedTracking)
+TEST(SearchTrailTemplateTest, HandlesCustomStructs)
 {
-    // 1. Initial State: 0 bytes
-    EXPECT_EQ(trail_.allocated_memory_bytes(), 0);
+    struct Domain { int min; int max; };
+    std::vector<Domain> domains(1, {0, 10});
 
-    // 2. Push Checkpoint
-    trail_.push_checkpoint();
-    size_t expected_size = sizeof(std::pair<size_t, size_t>);
-    EXPECT_EQ(trail_.allocated_memory_bytes(), expected_size);
+    // Instantiate with custom struct
+    leviathan::bnb::SearchTrail<Domain> domain_trail(10);
 
-    // 3. Add Value Entry
-    trail_.save_value(0, 100);
+    domain_trail.push_checkpoint();
+    domain_trail.save_value(0, domains[0]);
 
-    // Calculate added size dynamically to be platform agnostic
-    const size_t value_entry_size = trail_.allocated_memory_bytes() - expected_size;
-    expected_size += value_entry_size;
-    EXPECT_EQ(trail_.allocated_memory_bytes(), expected_size);
+    // Constrain domain
+    domains[0] = {5, 10};
 
-    // 4. Add Dirty Entry
-    trail_.mark_touched(1);
+    EXPECT_EQ(domains[0].min, 5);
 
-    const size_t dirty_entry_size = trail_.allocated_memory_bytes() - expected_size;
-    expected_size += dirty_entry_size;
-    EXPECT_EQ(trail_.allocated_memory_bytes(), expected_size);
+    domain_trail.backtrack(domains, [](size_t){});
 
-    // 5. Verify Backtracking reduces size
-    // FIX: Use 'times_' and 'assigned_ids_' instead of 'values_'/'assignments_'
-    trail_.backtrack(times_, assigned_ids_, -1);
-
-    EXPECT_EQ(trail_.allocated_memory_bytes(), 0);
+    EXPECT_EQ(domains[0].min, 0);
+    EXPECT_EQ(domains[0].max, 10);
 }
